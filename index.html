@@ -115,7 +115,7 @@
         }
 
         .timer-circle {
-            transition: stroke-dashoffset 1s linear;
+            transition: stroke-dashoffset 0.5s linear;
         }
     </style>
 </head>
@@ -125,16 +125,20 @@
     </div>
 
     <script type="text/babel">
-        // Register Service Worker
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('sw.js').catch(err => {
-                    console.log('ServiceWorker registration failed: ', err);
-                });
-            });
-        }
+        const { useState, useEffect, Fragment, useMemo, useRef } = React;
 
-        const { useState, useEffect, Fragment, useMemo, useRef, useCallback } = React;
+        // 请求通知权限
+        const requestNotificationPermission = () => {
+            if ("Notification" in window && Notification.permission !== "granted") {
+                Notification.requestPermission();
+            }
+        };
+
+        const sendNotification = (title, body) => {
+            if ("Notification" in window && Notification.permission === "granted") {
+                new Notification(title, { body, icon: 'icon.png' });
+            }
+        };
 
         const Icon = ({ name, size = 24, fill = "none", className = "" }) => {
             const icons = {
@@ -173,14 +177,12 @@
 
         const WheelPicker = ({ range, selected, onSelect, unit }) => {
             const containerRef = useRef(null);
-            
             useEffect(() => {
                 if (containerRef.current) {
                     const index = range.indexOf(selected);
                     containerRef.current.scrollTop = index * 33.33;
                 }
             }, [selected]);
-
             const handleScroll = () => {
                 if (!containerRef.current) return;
                 const scrollTop = containerRef.current.scrollTop;
@@ -189,15 +191,10 @@
                     onSelect(range[index]);
                 }
             };
-
             return (
                 <div className="relative h-[100px] bg-white border border-[#E8E5DE] rounded-[12px] flex flex-col items-center overflow-hidden">
                     <div className="absolute top-[33.33px] left-0 right-0 h-[33.33px] border-y border-[#BBCBC2]/30 pointer-events-none bg-[#BBCBC2]/5" />
-                    <div 
-                        ref={containerRef}
-                        onScroll={handleScroll}
-                        className="picker-container w-full"
-                    >
+                    <div ref={containerRef} onScroll={handleScroll} className="picker-container w-full">
                         <div className="h-[33.33px]" />
                         {range.map(val => (
                             <div key={val} className={`picker-item ${val === selected ? 'active' : ''}`}>
@@ -214,17 +211,18 @@
             const savedHistory = JSON.parse(localStorage.getItem('focusFlow_stickers') || '[]');
             const savedTodo = JSON.parse(localStorage.getItem('focusFlow_todo') || '[]');
             const savedActiveTask = localStorage.getItem('focusFlow_activeTask') || '';
-            const savedTimeLeft = parseInt(localStorage.getItem('focusFlow_timeLeft') || '300');
-            const savedInitialTime = parseInt(localStorage.getItem('focusFlow_initialTime') || '300');
             const savedIsActive = localStorage.getItem('focusFlow_isActive') === 'true';
+            const savedTargetEndTime = parseInt(localStorage.getItem('focusFlow_targetEndTime') || '0');
+            const savedInitialTime = parseInt(localStorage.getItem('focusFlow_initialTime') || '300');
 
             const [view, setView] = useState('home');
-            const [timeLeft, setTimeLeft] = useState(savedTimeLeft);
+            const [isActive, setIsActive] = useState(savedIsActive);
+            const [targetEndTime, setTargetEndTime] = useState(savedTargetEndTime);
+            const [timeLeft, setTimeLeft] = useState(0);
             const [initialTime, setInitialTime] = useState(savedInitialTime); 
+
             const [startHour, setStartHour] = useState(new Date().getHours());
             const [startMinute, setStartMinute] = useState(new Date().getMinutes());
-            const [reminders, setReminders] = useState([10, 20, 30]);
-            const [isActive, setIsActive] = useState(savedIsActive);
             const [taskInput, setTaskInput] = useState("");
             const [activeTask, setActiveTask] = useState(savedActiveTask);
             const [stickerHistory, setStickerHistory] = useState(savedHistory);
@@ -239,61 +237,89 @@
             const [draggingId, setDraggingId] = useState(null);
             const wallRef = useRef(null);
 
-            // 当设置面板打开时，自动对齐当前时间
-            useEffect(() => {
-                if (showSettings) {
-                    const now = new Date();
-                    setStartHour(now.getHours());
-                    setStartMinute(now.getMinutes());
-                }
-            }, [showSettings]);
+            // 记录已发出的提醒，防止重复弹出
+            const alertedTasks = useRef(new Set());
 
+            useEffect(() => {
+                requestNotificationPermission();
+            }, []);
+
+            // 核心逻辑：关联系统时钟的倒计时计算 + 任务提醒
+            useEffect(() => {
+                let timer;
+                const updateTimer = () => {
+                    const now = new Date();
+                    const nowTs = now.getTime();
+
+                    // 1. 检查任务开始时间点提醒
+                    const currentTimeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+                    todoList.forEach(item => {
+                        const alertKey = `${item.id}_${currentTimeStr}`;
+                        if (item.time === currentTimeStr && !alertedTasks.current.has(alertKey)) {
+                            sendNotification("任务时间到了！", `现在该开始「${item.task}」了。`);
+                            alertedTasks.current.add(alertKey);
+                        }
+                    });
+
+                    // 2. 处理专注倒计时
+                    if (isActive && targetEndTime > 0) {
+                        const remaining = Math.max(0, Math.ceil((targetEndTime - nowTs) / 1000));
+                        setTimeLeft(remaining);
+
+                        if (remaining <= 0) {
+                            setIsActive(false);
+                            setPostFocusModal(true);
+                            localStorage.removeItem('focusFlow_targetEndTime');
+                            sendNotification("专注完成！", `你已完成了一次心流，来抽一张贴纸吧。`);
+                        }
+                    } else if (!isActive && targetEndTime > 0) {
+                        const remaining = Math.max(0, Math.ceil((targetEndTime - nowTs) / 1000));
+                        setTimeLeft(remaining);
+                    }
+                };
+
+                updateTimer();
+                timer = setInterval(updateTimer, 1000);
+                return () => clearInterval(timer);
+            }, [isActive, targetEndTime, todoList]);
+
+            // 持久化
             useEffect(() => {
                 localStorage.setItem('focusFlow_stickers', JSON.stringify(stickerHistory));
-            }, [stickerHistory]);
-
-            useEffect(() => {
                 localStorage.setItem('focusFlow_todo', JSON.stringify(todoList));
-            }, [todoList]);
-
-            useEffect(() => {
                 localStorage.setItem('focusFlow_activeTask', activeTask);
-                localStorage.setItem('focusFlow_timeLeft', timeLeft.toString());
-                localStorage.setItem('focusFlow_initialTime', initialTime.toString());
                 localStorage.setItem('focusFlow_isActive', isActive.toString());
-            }, [activeTask, timeLeft, initialTime, isActive]);
+                localStorage.setItem('focusFlow_targetEndTime', targetEndTime.toString());
+                localStorage.setItem('focusFlow_initialTime', initialTime.toString());
+            }, [stickerHistory, todoList, activeTask, isActive, targetEndTime, initialTime]);
 
-            useEffect(() => {
-                refreshSuggestions();
-            }, []);
+            const startFocus = (task, duration = 300) => {
+                const finalTask = task || activeTask || taskInput || "随心专注";
+                const newTarget = Date.now() + (duration * 1000);
+                setActiveTask(finalTask);
+                setTargetEndTime(newTarget);
+                setInitialTime(duration);
+                setTimeLeft(duration);
+                setIsActive(true);
+                setView('focus');
+                setPostFocusModal(false);
+            };
+
+            const toggleFocus = () => {
+                if (isActive) {
+                    setIsActive(false);
+                } else {
+                    const newTarget = Date.now() + (timeLeft * 1000);
+                    setTargetEndTime(newTarget);
+                    setIsActive(true);
+                }
+            };
 
             const refreshSuggestions = () => {
                 const shuffled = [...MASTER_TASKS].sort(() => 0.5 - Math.random());
                 setSuggestedTasks(shuffled.slice(0, 3));
             };
-
-            useEffect(() => {
-                let timer;
-                if (isActive && timeLeft > 0) {
-                    timer = setInterval(() => {
-                        setTimeLeft(prev => prev - 1);
-                    }, 1000);
-                } else if (timeLeft === 0 && isActive) {
-                    setIsActive(false);
-                    setPostFocusModal(true);
-                }
-                return () => clearInterval(timer);
-            }, [isActive, timeLeft]);
-
-            const startFocus = (task, duration = 300) => {
-                const finalTask = task || activeTask || taskInput || "随心专注";
-                setActiveTask(finalTask);
-                setTimeLeft(duration);
-                setInitialTime(duration);
-                setIsActive(true);
-                setView('focus');
-                setPostFocusModal(false);
-            };
+            useEffect(() => { refreshSuggestions(); }, []);
 
             const addToTodayList = () => {
                 const task = taskInput || "新的规划";
@@ -303,40 +329,33 @@
                 setShowSettings(false);
             };
 
-            const handleSurpriseMe = () => {
-                const randomTask = MASTER_TASKS[Math.floor(Math.random() * MASTER_TASKS.length)];
-                setTaskInput(randomTask);
-            };
+            const handleSurpriseMe = () => setTaskInput(MASTER_TASKS[Math.floor(Math.random() * MASTER_TASKS.length)]);
 
             const handleDrawSticker = () => {
                 const icon = STICKERS[Math.floor(Math.random() * STICKERS.length)];
-                const newSticker = { 
-                    id: Date.now(), 
-                    icon, 
-                    task: activeTask, 
-                    date: new Date().toDateString(),
-                    x: 50, 
-                    y: 50,
-                    rotation: Math.random() * 20 - 10
-                };
+                const newSticker = { id: Date.now(), icon, task: activeTask, date: new Date().toDateString(), x: 50, y: 50, rotation: Math.random() * 20 - 10 };
                 setPendingSticker(newSticker);
                 setStickerHistory([...stickerHistory, newSticker]);
                 setPostFocusModal(false);
                 setPolaroidModal(true);
+                
+                // 改动点：重设倒计时为 5 分钟 (300秒)
+                setTargetEndTime(0);
+                setTimeLeft(300);
+                setInitialTime(300);
+                setIsActive(false);
             };
 
-            const onDragStart = (id, e) => setDraggingId(id);
+            const onDragStart = (id) => setDraggingId(id);
             const onDragEnd = () => setDraggingId(null);
             const onDragMove = (e) => {
                 if (!draggingId || !wallRef.current) return;
                 const rect = wallRef.current.getBoundingClientRect();
                 const clientX = e.touches ? e.touches[0].clientX : e.clientX;
                 const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-                const x = ((clientX - rect.left) / rect.width) * 100;
-                const y = ((clientY - rect.top) / rect.height) * 100;
-                const boundedX = Math.max(5, Math.min(95, x));
-                const boundedY = Math.max(5, Math.min(95, y));
-                setStickerHistory(prev => prev.map(s => s.id === draggingId ? { ...s, x: boundedX, y: boundedY } : s));
+                const x = Math.max(5, Math.min(95, ((clientX - rect.left) / rect.width) * 100));
+                const y = Math.max(5, Math.min(95, ((clientY - rect.top) / rect.height) * 100));
+                setStickerHistory(prev => prev.map(s => s.id === draggingId ? { ...s, x, y } : s));
             };
 
             const calendarDays = useMemo(() => {
@@ -350,22 +369,13 @@
                 return days;
             }, [currentDate]);
 
-            const dailyLogs = useMemo(() => stickerHistory.filter(h => h.date === selectedDate), [stickerHistory, selectedDate]);
-
-            const updateReminder = (index, value) => {
-                const newReminders = [...reminders];
-                newReminders[index] = parseInt(value);
-                setReminders(newReminders);
-            };
-
             const stopFocus = () => {
                 setIsActive(false);
+                setTargetEndTime(0);
                 setTimeLeft(300);
+                setInitialTime(300);
                 setView('home');
             };
-
-            const hoursRange = Array.from({length: 24}, (_, i) => i);
-            const minutesRange = Array.from({length: 60}, (_, i) => i);
 
             const radius = 110; 
             const circumference = 2 * Math.PI * radius;
@@ -390,27 +400,11 @@
                                 </div>
                                 
                                 <div className="space-y-4">
-                                    <div className="bg-white border border-[#E8E5DE] rounded-[28px] shadow-sm flex items-center p-2 pr-4 transition-all focus-within:border-[#BBCBC2]">
-                                        <input 
-                                            type="text" 
-                                            value={taskInput}
-                                            onChange={(e) => setTaskInput(e.target.value)}
-                                            placeholder="今天想专注做点什么？"
-                                            className="flex-1 bg-transparent py-3 px-4 text-[14px] text-[#8E8B82] placeholder:text-[#DEDAD1] focus:outline-none"
-                                        />
+                                    <div className="bg-white border border-[#E8E5DE] rounded-[28px] shadow-sm flex items-center p-2 pr-4">
+                                        <input type="text" value={taskInput} onChange={(e) => setTaskInput(e.target.value)} placeholder="今天想专注做点什么？" className="flex-1 bg-transparent py-3 px-4 text-[14px] text-[#8E8B82] focus:outline-none" />
                                         <div className="flex items-center gap-2">
-                                            <button 
-                                                onClick={() => setShowSettings(!showSettings)}
-                                                className={`w-8 h-8 flex items-center justify-center transition-colors ${showSettings ? 'text-[#BBCBC2]' : 'text-[#C5C2BB]'}`}
-                                            >
-                                                <Icon name="settings" size={18} />
-                                            </button>
-                                            <button 
-                                                onClick={() => startFocus()}
-                                                className="w-10 h-10 bg-[#BBCBC2] text-white rounded-full flex items-center justify-center btn-active shadow-sm"
-                                            >
-                                                <Icon name="play" size={16} fill="white" />
-                                            </button>
+                                            <button onClick={() => setShowSettings(!showSettings)} className={`w-8 h-8 flex items-center justify-center ${showSettings ? 'text-[#BBCBC2]' : 'text-[#C5C2BB]'}`}><Icon name="settings" size={18} /></button>
+                                            <button onClick={() => startFocus()} className="w-10 h-10 bg-[#BBCBC2] text-white rounded-full flex items-center justify-center btn-active shadow-sm"><Icon name="play" size={16} fill="white" /></button>
                                         </div>
                                     </div>
 
@@ -419,86 +413,43 @@
                                             <div className="space-y-3">
                                                 <label className="text-[10px] text-[#C5C2BB] uppercase tracking-widest pl-1 font-bold">设定开始时间</label>
                                                 <div className="grid grid-cols-2 gap-4">
-                                                    <WheelPicker range={hoursRange} selected={startHour} onSelect={setStartHour} unit="时" />
-                                                    <WheelPicker range={minutesRange} selected={startMinute} onSelect={setStartMinute} unit="分" />
+                                                    <WheelPicker range={Array.from({length: 24}, (_, i) => i)} selected={startHour} onSelect={setStartHour} unit="时" />
+                                                    <WheelPicker range={Array.from({length: 60}, (_, i) => i)} selected={startMinute} onSelect={setStartMinute} unit="分" />
                                                 </div>
-                                                
-                                                <button 
-                                                    onClick={addToTodayList}
-                                                    className="w-full mt-2 py-3 bg-white border border-[#E8E5DE] text-[#8E8B82] rounded-[16px] text-[11px] flex items-center justify-center gap-2 btn-active"
-                                                >
-                                                    <Icon name="plus" size={14} className="text-[#BBCBC2]" />
-                                                    加入今日列表
+                                                <button onClick={addToTodayList} className="w-full mt-2 py-3 bg-white border border-[#E8E5DE] text-[#8E8B82] rounded-[16px] text-[11px] flex items-center justify-center gap-2 btn-active">
+                                                    <Icon name="plus" size={14} className="text-[#BBCBC2]" /> 加入今日列表
                                                 </button>
-                                            </div>
-
-                                            <div className="space-y-4 pt-2">
-                                                <label className="text-[10px] text-[#C5C2BB] uppercase tracking-widest pl-1 font-bold">设置提醒闹钟</label>
-                                                <div className="space-y-5">
-                                                    {reminders.map((r, i) => (
-                                                        <div key={i} className="space-y-2">
-                                                            <div className="flex justify-between items-center text-[11px] text-[#8E8B82]">
-                                                                <span>提醒 {i + 1}</span>
-                                                                <span className="font-bold text-[#BBCBC2]">提前 {r} 分钟提醒</span>
-                                                            </div>
-                                                            <input 
-                                                                type="range"
-                                                                min="1"
-                                                                max="60"
-                                                                value={r}
-                                                                onChange={(e) => updateReminder(i, e.target.value)}
-                                                                className="w-full"
-                                                            />
-                                                        </div>
-                                                    ))}
-                                                </div>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
 
                                 <button onClick={handleSurpriseMe} className="w-full py-4 bg-white/50 border border-dashed border-[#E8E5DE] text-[#8E8B82] rounded-[24px] flex items-center justify-center gap-2 btn-active group">
-                                    <Icon name="sparkle" size={16} className="text-[#BBCBC2] group-hover:rotate-12 transition-transform" />
-                                    <span className="text-[12px] tracking-widest">还没有灵感？随便来一个</span>
+                                    <Icon name="sparkle" size={16} className="text-[#BBCBC2]" /> <span className="text-[12px] tracking-widest">还没有灵感？随便来一个</span>
                                 </button>
 
                                 {todoList.length > 0 ? (
                                     <div className="space-y-3">
                                         <div className="text-[10px] tracking-[0.2em] text-[#C5C2BB] uppercase pl-2 font-bold">自定任务列表</div>
-                                        <div className="grid grid-cols-1 gap-3">
-                                            {todoList.map((item) => (
-                                                <div key={item.id} className="w-full py-4 px-5 bg-white border border-[#E8E5DE] rounded-[22px] flex items-center justify-between group shadow-sm transition-all hover:border-[#BBCBC2]">
-                                                    <div className="flex flex-col gap-0.5">
-                                                        <span className="text-[13px] text-[#8E8B82] font-medium">{item.task}</span>
-                                                        <div className="flex items-center gap-1.5 text-[10px] text-[#C5C2BB]">
-                                                            <Icon name="clock" size={10} className="text-[#BBCBC2]" />
-                                                            <span>倒数开始：{item.time}</span>
-                                                        </div>
-                                                    </div>
-                                                    <button 
-                                                        onClick={() => startFocus(item.task)}
-                                                        className="w-9 h-9 bg-[#BBCBC2]/10 text-[#BBCBC2] rounded-full flex items-center justify-center btn-active hover:bg-[#BBCBC2] hover:text-white transition-all"
-                                                    >
-                                                        <Icon name="play" size={14} fill="currentColor" />
-                                                    </button>
+                                        {todoList.map((item) => (
+                                            <div key={item.id} className="w-full py-4 px-5 bg-white border border-[#E8E5DE] rounded-[22px] flex items-center justify-between shadow-sm">
+                                                <div className="flex flex-col">
+                                                    <span className="text-[13px] text-[#8E8B82] font-medium">{item.task}</span>
+                                                    <span className="text-[10px] text-[#C5C2BB]">任务开始：{item.time}</span>
                                                 </div>
-                                            ))}
-                                        </div>
+                                                <button onClick={() => startFocus(item.task)} className="w-9 h-9 bg-[#BBCBC2]/10 text-[#BBCBC2] rounded-full flex items-center justify-center btn-active"><Icon name="play" size={14} fill="currentColor" /></button>
+                                            </div>
+                                        ))}
                                     </div>
                                 ) : (
                                     <div className="space-y-3">
                                         <div className="text-[10px] tracking-[0.2em] text-[#C5C2BB] uppercase pl-2">推荐小任务</div>
-                                        <div className="grid grid-cols-1 gap-2">
-                                            {suggestedTasks.map((t, idx) => (
-                                                <button key={idx} onClick={() => startFocus(t)} className="w-full py-4 px-6 bg-white border border-[#E8E5DE] rounded-[22px] text-[13px] text-left text-[#8E8B82] hover:bg-white/80 transition-colors flex justify-between items-center group shadow-sm">
-                                                    {t}
-                                                    <Icon name="play" size={12} className="opacity-0 group-hover:opacity-100 text-[#BBCBC2]" />
-                                                </button>
-                                            ))}
-                                        </div>
-                                        <button onClick={refreshSuggestions} className="text-[11px] text-[#BBCBC2] flex items-center justify-center gap-1 w-full pt-1">
-                                            <Icon name="refresh" size={12} /> 换一批
-                                        </button>
+                                        {suggestedTasks.map((t, idx) => (
+                                            <button key={idx} onClick={() => startFocus(t)} className="w-full py-4 px-6 bg-white border border-[#E8E5DE] rounded-[22px] text-[13px] text-left text-[#8E8B82] flex justify-between items-center group shadow-sm">
+                                                {t} <Icon name="play" size={12} className="opacity-0 group-hover:opacity-100 text-[#BBCBC2]" />
+                                            </button>
+                                        ))}
+                                        <button onClick={refreshSuggestions} className="text-[11px] text-[#BBCBC2] flex items-center justify-center gap-1 w-full pt-1"><Icon name="refresh" size={12} /> 换一批</button>
                                     </div>
                                 )}
                             </div>
@@ -510,41 +461,20 @@
                                     <div className="text-[10px] text-[#C5C2BB] uppercase tracking-[0.3em] mb-2">正在专注</div>
                                     <h2 className="text-[20px] text-[#8E8B82] italic font-normal">{activeTask}</h2>
                                 </div>
-                                
                                 <div className="relative w-80 h-80 flex items-center justify-center mb-12">
                                     <svg className="absolute w-full h-full -rotate-90">
-                                        <circle
-                                            cx="160" cy="160" r={radius}
-                                            stroke="#E8E5DE" strokeWidth="2" fill="transparent"
-                                            strokeDasharray="4, 4"
-                                        />
-                                        <circle
-                                            className="timer-circle"
-                                            cx="160" cy="160" r={radius}
-                                            stroke="#BBCBC2" strokeWidth="6" fill="transparent"
-                                            strokeDasharray={circumference}
-                                            strokeDashoffset={strokeDashoffset}
-                                            strokeLinecap="round"
-                                        />
+                                        <circle cx="160" cy="160" r={radius} stroke="#E8E5DE" strokeWidth="2" fill="transparent" strokeDasharray="4, 4" />
+                                        <circle className="timer-circle" cx="160" cy="160" r={radius} stroke="#BBCBC2" strokeWidth="6" fill="transparent" strokeDasharray={circumference} strokeDashoffset={strokeDashoffset} strokeLinecap="round" />
                                     </svg>
                                     <div className="text-[72px] font-light text-[#8E8B82] tabular-nums tracking-tighter z-10">
                                         {Math.floor(timeLeft/60)}:{(timeLeft%60).toString().padStart(2,'0')}
                                     </div>
                                 </div>
-
                                 <div className="flex flex-col gap-6 w-full px-12 items-center">
-                                    <button 
-                                        onClick={()=>setIsActive(!isActive)} 
-                                        className="w-full py-4 bg-[#BBCBC2] text-white rounded-[24px] text-[13px] tracking-widest btn-active shadow-md font-medium"
-                                    >
+                                    <button onClick={toggleFocus} className="w-full py-4 bg-[#BBCBC2] text-white rounded-[24px] text-[13px] tracking-widest btn-active shadow-md font-medium">
                                         {isActive ? "稍作喘息" : "继续心流"}
                                     </button>
-                                    <button 
-                                        onClick={stopFocus}
-                                        className="text-[11px] text-[#DEDAD1] hover:text-[#C5C2BB] transition-colors border-b border-transparent hover:border-current pb-0.5 tracking-wider"
-                                    >
-                                        结束本次专注
-                                    </button>
+                                    <button onClick={stopFocus} className="text-[11px] text-[#DEDAD1] border-b border-transparent hover:border-current pb-0.5">结束本次专注</button>
                                 </div>
                             </div>
                         )}
@@ -554,9 +484,7 @@
                                 <div className="mb-6"><h2 className="text-[22px] text-[#8E8B82]">手帐墙</h2><p className="text-[10px] text-[#C5C2BB]">长按拖拽贴纸，布置你的专属空间</p></div>
                                 <div ref={wallRef} onMouseMove={onDragMove} onMouseUp={onDragEnd} onTouchMove={onDragMove} onTouchEnd={onDragEnd} className="flex-1 bg-white rounded-[32px] border-8 border-white shadow-inner sticker-wall-bg relative overflow-hidden">
                                     {stickerHistory.map(s => (
-                                        <div key={s.id} onMouseDown={(e) => onDragStart(s.id, e)} onTouchStart={(e) => onDragStart(s.id, e)} className={`absolute draggable-sticker text-5xl select-none ${draggingId === s.id ? 'z-50 scale-125' : 'z-10'}`} style={{ left: `${s.x}%`, top: `${s.y}%`, transform: `translate(-50%, -50%) rotate(${s.rotation}deg)` }}>
-                                            {s.icon}
-                                        </div>
+                                        <div key={s.id} onMouseDown={() => onDragStart(s.id)} onTouchStart={() => onDragStart(s.id)} className={`absolute draggable-sticker text-5xl select-none ${draggingId === s.id ? 'z-50 scale-125' : 'z-10'}`} style={{ left: `${s.x}%`, top: `${s.y}%`, transform: `translate(-50%, -50%) rotate(${s.rotation}deg)` }}>{s.icon}</div>
                                     ))}
                                 </div>
                             </div>
@@ -580,14 +508,12 @@
                                     })}
                                 </div>
                                 <div className="border-t border-[#E8E5DE] pt-8">
-                                    {dailyLogs.length > 0 ? dailyLogs.map(log => (
+                                    {stickerHistory.filter(h => h.date === selectedDate).length > 0 ? stickerHistory.filter(h => h.date === selectedDate).map(log => (
                                         <div key={log.id} className="bg-white/50 p-4 rounded-[20px] flex items-center gap-4 border border-[#E8E5DE] mb-3">
                                             <div className="text-2xl">{log.icon}</div>
-                                            <div><p className="text-[13px] text-[#8E8B82] font-medium">{log.task}</p></div>
+                                            <p className="text-[13px] text-[#8E8B82] font-medium">{log.task}</p>
                                         </div>
-                                    )) : (
-                                        <div className="text-center py-10 text-[13px] text-[#C5C2BB] italic">今天也是美美的休息日呢</div>
-                                    )}
+                                    )) : <div className="text-center py-10 text-[13px] text-[#C5C2BB] italic">今天也是美美的休息日呢</div>}
                                 </div>
                             </div>
                         )}
@@ -598,23 +524,13 @@
                             <div className="bg-white rounded-[40px] p-8 w-full animate-pop shadow-2xl text-center">
                                 <div className="text-[40px] mb-4">✨</div>
                                 <h3 className="text-[18px] text-[#8E8B82] mb-2 font-bold">专注阶段完成</h3>
-                                <p className="text-[12px] text-[#C5C2BB] mb-8">要不要再试着坚持一小会儿？</p>
-                                
-                                <div className="space-y-3 mb-6">
+                                <div className="space-y-3 mb-6 mt-6">
+                                    {/* 加时逻辑校准：对应增加的时间设定倒数 */}
                                     {[15, 30, 60].map(mins => (
-                                        <button 
-                                            key={mins}
-                                            onClick={() => startFocus(null, mins * 60)}
-                                            className="w-full py-3 bg-[#BBCBC2]/10 text-[#BBCBC2] rounded-[18px] text-[13px] font-medium btn-active hover:bg-[#BBCBC2]/20 transition-colors"
-                                        >
-                                            我还能坚持 {mins} 分钟
-                                        </button>
+                                        <button key={mins} onClick={() => startFocus(null, mins * 60)} className="w-full py-3 bg-[#BBCBC2]/10 text-[#BBCBC2] rounded-[18px] text-[13px] font-medium btn-active">我还能坚持 {mins} 分钟</button>
                                     ))}
                                 </div>
-
-                                <button onClick={handleDrawSticker} className="w-full py-4 bg-[#BBCBC2] text-white rounded-[22px] text-[14px] font-bold btn-active shadow-lg">
-                                    结束专注！蒸蚌！
-                                </button>
+                                <button onClick={handleDrawSticker} className="w-full py-4 bg-[#BBCBC2] text-white rounded-[22px] text-[14px] font-bold btn-active shadow-lg">结束专注！蒸蚌！</button>
                             </div>
                         </div>
                     )}
@@ -622,9 +538,7 @@
                     {polaroidModal && pendingSticker && (
                         <div className="fixed inset-0 z-[110] bg-[#EAE7E0] flex flex-col items-center justify-center p-10 animate-fadeIn">
                             <div className="polaroid-frame animate-pop mb-14 w-full max-w-[280px]">
-                                <div className="aspect-square bg-[#FAF8F5] flex items-center justify-center text-[110px] sticker-wall-bg mb-5 overflow-hidden">
-                                    <span className="drop-shadow-sm">{pendingSticker.icon}</span>
-                                </div>
+                                <div className="aspect-square bg-[#FAF8F5] flex items-center justify-center text-[110px] sticker-wall-bg mb-5 overflow-hidden"><span>{pendingSticker.icon}</span></div>
                                 <div className="px-1 text-left">
                                     <div className="text-[16px] text-[#8E8B82] font-medium leading-tight mb-4">「{pendingSticker.task}」</div>
                                     <div className="flex justify-between items-center border-t border-[#F4F1EA] pt-3">
@@ -633,22 +547,11 @@
                                     </div>
                                 </div>
                             </div>
-
-                            <p className="text-[12px] text-[#C5C2BB] mb-8 text-center">截图分享这张拍立得<br/>标记你的专注瞬间</p>
-
-                            <button 
-                                onClick={() => {
-                                    setPolaroidModal(false);
-                                    setView('growth');
-                                }} 
-                                className="px-12 py-4 bg-white text-[#8E8B82] rounded-full text-[13px] font-bold shadow-sm border border-[#E8E5DE] btn-active"
-                            >
-                                收进我的手帐墙
-                            </button>
+                            <button onClick={() => { setPolaroidModal(false); setView('growth'); }} className="px-12 py-4 bg-white text-[#8E8B82] rounded-full text-[13px] font-bold shadow-sm border border-[#E8E5DE] btn-active">收进我的手帐墙</button>
                         </div>
                     )}
 
-                    <nav className="bg-[#FAF8F5]/80 backdrop-blur-sm flex justify-around items-center pt-5 pb-10 flex-shrink-0 border-t border-[#F4F1EA]">
+                    <nav className="bg-[#FAF8F5]/80 backdrop-blur-sm flex justify-around items-center pt-5 pb-10 border-t border-[#F4F1EA]">
                         <button onClick={()=>setView('home')} className={`flex flex-col items-center gap-1 ${view==='home'?'text-[#BBCBC2]':'text-[#DEDAD1]'}`}><Icon name="home" size={24}/><span className="text-[9px]">主页</span></button>
                         <button onClick={()=>setView('focus')} className={`flex flex-col items-center gap-1 ${view==='focus'?'text-[#BBCBC2]':'text-[#DEDAD1]'}`}><Icon name="timer" size={24}/><span className="text-[9px]">专注</span></button>
                         <button onClick={()=>setView('growth')} className={`flex flex-col items-center gap-1 ${view==='growth'?'text-[#BBCBC2]':'text-[#DEDAD1]'}`}><Icon name="award" size={24}/><span className="text-[9px]">成长</span></button>
