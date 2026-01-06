@@ -128,14 +128,27 @@
         const { useState, useEffect, Fragment, useMemo, useRef } = React;
 
         const requestNotificationPermission = () => {
-            if ("Notification" in window && Notification.permission !== "granted") {
+            if ("Notification" in window) {
                 Notification.requestPermission();
             }
         };
 
         const sendNotification = (title, body) => {
             if ("Notification" in window && Notification.permission === "granted") {
-                new Notification(title, { body, icon: 'icon.png' });
+                // 解决后台通知的关键：尝试通过 Service Worker 发送，这在锁屏和后台更可靠
+                if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                    navigator.serviceWorker.ready.then(registration => {
+                        registration.showNotification(title, {
+                            body,
+                            icon: 'icon.png',
+                            badge: 'icon.png',
+                            vibrate: [200, 100, 200]
+                        });
+                    });
+                } else {
+                    // 降级为普通网页通知
+                    new Notification(title, { body, icon: 'icon.png' });
+                }
             }
         };
 
@@ -382,8 +395,6 @@
             }, [currentDate]);
 
             const stopFocus = () => {
-                // 逻辑：如果是初始的 5 分钟 (300s) 且 任务还没结束过
-                // 此时提前结束不触发抽奖
                 if (initialTime === 300 && !postFocusModal) {
                     setIsActive(false);
                     setTargetEndTime(0);
@@ -391,8 +402,6 @@
                     setInitialTime(300);
                     setView('home');
                 } else {
-                    // 除此之外的所有结束（包括加时后的结束、或者已经自然结束过弹出过抽奖提示后的点击）
-                    // 均触发抽奖逻辑
                     setIsActive(false);
                     setPostFocusModal(true);
                 }
@@ -628,6 +637,7 @@
 
         ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 
+        // 核心：Service Worker 的注册和更新，确保后台能力
         if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./sw.js').then(reg => {
