@@ -1,23 +1,20 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-    <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#FAF8F5">
-    
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Focus Flow</title>
-
-    <meta name="apple-mobile-web-app-title" content="Focus Flow">
+    <title>FocusFlow - 仪式感手绘手账版</title>
+    <!-- PWA Essential Tags -->
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon.png">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <link rel="apple-touch-icon" href="icon.png">
-
+    <meta name="theme-color" content="#FAF8F5">
+    
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
     <style>
         @font-face { font-family: 'Handwritten'; src: local('PingFang SC'), local('Heiti SC'), sans-serif; }
         :root {
@@ -28,10 +25,9 @@
             --morandi-green: #BBCBC2;
             --accent-soft: #A7C4BC;
         }
-        body { font-family: 'Handwritten', sans-serif; background-color: #EAE7E0; margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; color: var(--text-main); touch-action: none; }
-        #phone-container { width: 100%; max-width: 393px; height: 100%; max-height: 852px; background-color: var(--cream-bg); position: relative; box-shadow: 0 20px 50px rgba(0,0,0,0.05); overflow: hidden; display: flex; flex-direction: column; border: 10px solid #DEDAD1; border-radius: 54px; }
+        body { font-family: 'Handwritten', sans-serif; background-color: var(--cream-bg); margin: 0; padding: 0; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; color: var(--text-main); touch-action: none; }
+        #phone-container { width: 100%; max-width: 393px; height: 100%; max-height: 852px; background-color: var(--cream-bg); position: relative; overflow: hidden; display: flex; flex-direction: column; border: none; border-radius: 0; }
         .paper-overlay::before { content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0.3; pointer-events: none; background-image: url("https://www.transparenttextures.com/patterns/natural-paper.png"); z-index: 10; }
-        @media (max-width: 640px) { #phone-container { border-radius: 0; border: none; } }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .btn-active:active { transform: scale(0.97); transition: 0.2s; }
         
@@ -40,7 +36,6 @@
             background-size: 20px 20px;
         }
 
-        /* 拍立得相框效果 */
         .polaroid-frame {
             background: white;
             padding: 12px 12px 48px 12px;
@@ -130,6 +125,15 @@
     </div>
 
     <script type="text/babel">
+        // Register Service Worker
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').catch(err => {
+                    console.log('ServiceWorker registration failed: ', err);
+                });
+            });
+        }
+
         const { useState, useEffect, Fragment, useMemo, useRef, useCallback } = React;
 
         const Icon = ({ name, size = 24, fill = "none", className = "" }) => {
@@ -175,7 +179,7 @@
                     const index = range.indexOf(selected);
                     containerRef.current.scrollTop = index * 33.33;
                 }
-            }, []);
+            }, [selected]);
 
             const handleScroll = () => {
                 if (!containerRef.current) return;
@@ -207,19 +211,23 @@
         };
 
         const App = () => {
+            const savedHistory = JSON.parse(localStorage.getItem('focusFlow_stickers') || '[]');
+            const savedTodo = JSON.parse(localStorage.getItem('focusFlow_todo') || '[]');
+            const savedActiveTask = localStorage.getItem('focusFlow_activeTask') || '';
+            const savedTimeLeft = parseInt(localStorage.getItem('focusFlow_timeLeft') || '300');
+            const savedInitialTime = parseInt(localStorage.getItem('focusFlow_initialTime') || '300');
+            const savedIsActive = localStorage.getItem('focusFlow_isActive') === 'true';
+
             const [view, setView] = useState('home');
-            const [timeLeft, setTimeLeft] = useState(300);
-            const [initialTime, setInitialTime] = useState(300); 
-            
-            const now = new Date();
-            const [startHour, setStartHour] = useState(now.getHours());
-            const [startMinute, setStartMinute] = useState(now.getMinutes());
-            
+            const [timeLeft, setTimeLeft] = useState(savedTimeLeft);
+            const [initialTime, setInitialTime] = useState(savedInitialTime); 
+            const [startHour, setStartHour] = useState(new Date().getHours());
+            const [startMinute, setStartMinute] = useState(new Date().getMinutes());
             const [reminders, setReminders] = useState([10, 20, 30]);
-            const [isActive, setIsActive] = useState(false);
+            const [isActive, setIsActive] = useState(savedIsActive);
             const [taskInput, setTaskInput] = useState("");
-            const [activeTask, setActiveTask] = useState("");
-            const [stickerHistory, setStickerHistory] = useState([]);
+            const [activeTask, setActiveTask] = useState(savedActiveTask);
+            const [stickerHistory, setStickerHistory] = useState(savedHistory);
             const [postFocusModal, setPostFocusModal] = useState(false);
             const [polaroidModal, setPolaroidModal] = useState(false);
             const [pendingSticker, setPendingSticker] = useState(null);
@@ -227,10 +235,33 @@
             const [selectedDate, setSelectedDate] = useState(new Date().toDateString());
             const [suggestedTasks, setSuggestedTasks] = useState([]);
             const [showSettings, setShowSettings] = useState(false);
-            const [todoList, setTodoList] = useState([]);
-            
+            const [todoList, setTodoList] = useState(savedTodo);
             const [draggingId, setDraggingId] = useState(null);
             const wallRef = useRef(null);
+
+            // 当设置面板打开时，自动对齐当前时间
+            useEffect(() => {
+                if (showSettings) {
+                    const now = new Date();
+                    setStartHour(now.getHours());
+                    setStartMinute(now.getMinutes());
+                }
+            }, [showSettings]);
+
+            useEffect(() => {
+                localStorage.setItem('focusFlow_stickers', JSON.stringify(stickerHistory));
+            }, [stickerHistory]);
+
+            useEffect(() => {
+                localStorage.setItem('focusFlow_todo', JSON.stringify(todoList));
+            }, [todoList]);
+
+            useEffect(() => {
+                localStorage.setItem('focusFlow_activeTask', activeTask);
+                localStorage.setItem('focusFlow_timeLeft', timeLeft.toString());
+                localStorage.setItem('focusFlow_initialTime', initialTime.toString());
+                localStorage.setItem('focusFlow_isActive', isActive.toString());
+            }, [activeTask, timeLeft, initialTime, isActive]);
 
             useEffect(() => {
                 refreshSuggestions();
@@ -336,7 +367,6 @@
             const hoursRange = Array.from({length: 24}, (_, i) => i);
             const minutesRange = Array.from({length: 60}, (_, i) => i);
 
-            // 倒计时圆环参数
             const radius = 110; 
             const circumference = 2 * Math.PI * radius;
             const strokeDashoffset = circumference - (timeLeft / initialTime) * circumference;
@@ -629,10 +659,5 @@
 
         ReactDOM.createRoot(document.getElementById('root')).render(<App />);
     </script>
-<script>
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js');
-  }
-</script>
 </body>
 </html>
