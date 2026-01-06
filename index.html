@@ -64,7 +64,7 @@
             transition: max-height 0.3s ease-out;
         }
         .settings-content.open {
-            max-height: 700px;
+            max-height: 800px;
         }
 
         input[type=range] {
@@ -127,14 +127,13 @@
     <script type="text/babel">
         const { useState, useEffect, Fragment, useMemo, useRef } = React;
 
-        // 系统通知辅助函数 - 确保系统级通知权限
+        // 系统通知辅助函数
         const requestNotificationPermission = () => {
             if ("Notification" in window && Notification.permission !== "granted") {
                 Notification.requestPermission();
             }
         };
 
-        // 发送系统通知 (即便锁屏也能显示，取决于OS权限)
         const sendNotification = (title, body) => {
             if ("Notification" in window && Notification.permission === "granted") {
                 new Notification(title, { body, icon: 'icon.png' });
@@ -160,7 +159,8 @@
                 ),
                 plus: <path d="M5 12h14M12 5v14" />,
                 clock: <Fragment><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></Fragment>,
-                square: <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                square: <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />,
+                trash: <path d="M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
             };
             return (
                 <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -238,31 +238,52 @@
             const [draggingId, setDraggingId] = useState(null);
             const wallRef = useRef(null);
             
-            // 追踪已发出的任务提醒
+            // 提醒相关状态
+            const [advanceReminders, setAdvanceReminders] = useState([5]); // 初始默认5分钟提醒
             const alertedTasks = useRef(new Set());
 
             useEffect(() => {
                 requestNotificationPermission();
             }, []);
 
-            // 核心定时器逻辑：处理倒计时与任务时间点提醒
+            // 核心定时器逻辑
             useEffect(() => {
                 let timer;
                 const checkStatus = () => {
                     const now = new Date();
                     const nowTs = now.getTime();
 
-                    // 全局提醒 1: 任务开始时间提醒
-                    const currentTimeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+                    // 处理提前提醒与准时提醒
                     todoList.forEach(item => {
-                        const alertId = `${item.id}-${currentTimeStr}`;
-                        if (item.time === currentTimeStr && !alertedTasks.current.has(alertId)) {
+                        const [h, m] = item.time.split(':').map(Number);
+                        const taskStartTime = new Date(now);
+                        taskStartTime.setHours(h, m, 0, 0);
+
+                        // 1. 准时提醒
+                        const currentTimeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+                        const alertIdOnTime = `${item.id}-ontime-${currentTimeStr}`;
+                        if (item.time === currentTimeStr && !alertedTasks.current.has(alertIdOnTime)) {
                             sendNotification("任务该开始了！", `计划中的「${item.task}」已经到达设定时间。`);
-                            alertedTasks.current.add(alertId);
+                            alertedTasks.current.add(alertIdOnTime);
+                        }
+
+                        // 2. 提前提醒 (Slider设置)
+                        if (item.reminders) {
+                            item.reminders.forEach(minutes => {
+                                const reminderTimeTs = taskStartTime.getTime() - (minutes * 60 * 1000);
+                                // 在一分钟的容差内检查
+                                if (Math.abs(nowTs - reminderTimeTs) < 30000) {
+                                    const alertIdAdvance = `${item.id}-advance-${minutes}-${item.time}`;
+                                    if (!alertedTasks.current.has(alertIdAdvance)) {
+                                        sendNotification("任务即将开始", `「${item.task}」还有 ${minutes} 分钟就要开始了。`);
+                                        alertedTasks.current.add(alertIdAdvance);
+                                    }
+                                }
+                            });
                         }
                     });
 
-                    // 全局提醒 2: 专注倒计时结束提醒
+                    // 专注倒计时结束提醒
                     if (isActive && targetEndTime > 0) {
                         const remaining = Math.max(0, Math.ceil((targetEndTime - nowTs) / 1000));
                         setTimeLeft(remaining);
@@ -284,7 +305,6 @@
                 return () => clearInterval(timer);
             }, [isActive, targetEndTime, todoList]);
 
-            // 数据持久化
             useEffect(() => {
                 localStorage.setItem('focusFlow_stickers', JSON.stringify(stickerHistory));
                 localStorage.setItem('focusFlow_todo', JSON.stringify(todoList));
@@ -325,9 +345,10 @@
             const addToTodayList = () => {
                 const task = taskInput || "新的规划";
                 const timeStr = `${startHour.toString().padStart(2,'0')}:${startMinute.toString().padStart(2,'0')}`;
-                setTodoList([...todoList, { id: Date.now(), task, time: timeStr }]);
+                setTodoList([...todoList, { id: Date.now(), task, time: timeStr, reminders: [...advanceReminders] }]);
                 setTaskInput("");
                 setShowSettings(false);
+                setAdvanceReminders([5]); // 重置为默认
             };
 
             const handleSurpriseMe = () => setTaskInput(MASTER_TASKS[Math.floor(Math.random() * MASTER_TASKS.length)]);
@@ -339,8 +360,6 @@
                 setStickerHistory([...stickerHistory, newSticker]);
                 setPostFocusModal(false);
                 setPolaroidModal(true);
-                
-                // 结束并重设倒计时
                 setTargetEndTime(0);
                 setTimeLeft(300);
                 setInitialTime(300);
@@ -378,7 +397,6 @@
                 setView('home');
             };
 
-            // 修改点：每次打开设置面板时，更新为当前的系统时间
             const toggleSettings = () => {
                 const nextState = !showSettings;
                 if (nextState) {
@@ -387,6 +405,18 @@
                     setStartMinute(now.getMinutes());
                 }
                 setShowSettings(nextState);
+            };
+
+            const updateReminder = (index, value) => {
+                const newR = [...advanceReminders];
+                newR[index] = parseInt(value);
+                setAdvanceReminders(newR);
+            };
+
+            const addReminder = () => {
+                if (advanceReminders.length < 3) {
+                    setAdvanceReminders([...advanceReminders, 10]);
+                }
             };
 
             const radius = 110; 
@@ -428,10 +458,29 @@
                                                     <WheelPicker range={Array.from({length: 24}, (_, i) => i)} selected={startHour} onSelect={setStartHour} unit="时" />
                                                     <WheelPicker range={Array.from({length: 60}, (_, i) => i)} selected={startMinute} onSelect={setStartMinute} unit="分" />
                                                 </div>
-                                                <button onClick={addToTodayList} className="w-full mt-2 py-3 bg-white border border-[#E8E5DE] text-[#8E8B82] rounded-[16px] text-[11px] flex items-center justify-center gap-2 btn-active">
-                                                    <Icon name="plus" size={14} className="text-[#BBCBC2]" /> 加入今日列表
-                                                </button>
                                             </div>
+                                            
+                                            <div className="space-y-4">
+                                                <div className="flex justify-between items-center">
+                                                    <label className="text-[10px] text-[#C5C2BB] uppercase tracking-widest pl-1 font-bold">提前提醒设置</label>
+                                                    {advanceReminders.length < 3 && (
+                                                        <button onClick={addReminder} className="text-[10px] text-[#BBCBC2] flex items-center gap-1"><Icon name="plus" size={12}/> 添加提醒</button>
+                                                    )}
+                                                </div>
+                                                {advanceReminders.map((min, idx) => (
+                                                    <div key={idx} className="space-y-2 bg-white/60 p-3 rounded-xl border border-[#E8E5DE]">
+                                                        <div className="flex justify-between text-[11px] text-[#8E8B82]">
+                                                            <span>提醒 {idx + 1}</span>
+                                                            <span className="font-bold">提前 {min} 分钟</span>
+                                                        </div>
+                                                        <input type="range" min="1" max="60" value={min} onChange={(e) => updateReminder(idx, e.target.value)} />
+                                                    </div>
+                                                ))}
+                                            </div>
+
+                                            <button onClick={addToTodayList} className="w-full mt-2 py-3 bg-white border border-[#E8E5DE] text-[#8E8B82] rounded-[16px] text-[11px] flex items-center justify-center gap-2 btn-active">
+                                                <Icon name="plus" size={14} className="text-[#BBCBC2]" /> 加入今日列表
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
@@ -447,9 +496,14 @@
                                             <div key={item.id} className="w-full py-4 px-5 bg-white border border-[#E8E5DE] rounded-[22px] flex items-center justify-between shadow-sm">
                                                 <div className="flex flex-col">
                                                     <span className="text-[13px] text-[#8E8B82] font-medium">{item.task}</span>
-                                                    <span className="text-[10px] text-[#C5C2BB]">任务开始：{item.time}</span>
+                                                    <span className="text-[10px] text-[#C5C2BB]">
+                                                        {item.time} {item.reminders && item.reminders.length > 0 && `(含${item.reminders.length}个预警)`}
+                                                    </span>
                                                 </div>
-                                                <button onClick={() => startFocus(item.task)} className="w-9 h-9 bg-[#BBCBC2]/10 text-[#BBCBC2] rounded-full flex items-center justify-center btn-active"><Icon name="play" size={14} fill="currentColor" /></button>
+                                                <div className="flex items-center gap-2">
+                                                    <button onClick={() => setTodoList(todoList.filter(t => t.id !== item.id))} className="text-[#DEDAD1] p-2"><Icon name="trash" size={14}/></button>
+                                                    <button onClick={() => startFocus(item.task)} className="w-9 h-9 bg-[#BBCBC2]/10 text-[#BBCBC2] rounded-full flex items-center justify-center btn-active"><Icon name="play" size={14} fill="currentColor" /></button>
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
@@ -572,6 +626,36 @@
         };
 
         ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
+        // --- PWA 自动更新安装逻辑 (优化版：修复协议报错) ---
+        // 在受限的 iframe 或预览环境中，URL 协议可能不支持注册 SW
+        if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js').then(reg => {
+                    // 检查更新逻辑
+                    reg.addEventListener('updatefound', () => {
+                        const newWorker = reg.installing;
+                        if (newWorker) {
+                            newWorker.addEventListener('statechange', () => {
+                                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                    // 发现新版本并已安装，自动刷新应用以启用
+                                    window.location.reload();
+                                }
+                            });
+                        }
+                    });
+                }).catch(err => {
+                    // 静默捕获注册失败（常见于预览环境协议不支持）
+                });
+            });
+
+            // 轮询检查服务器是否有新Service Worker版本 (每小时)
+            setInterval(() => {
+                navigator.serviceWorker.ready.then(reg => {
+                    if (reg.update) reg.update();
+                }).catch(() => {});
+            }, 3600000);
+        }
     </script>
 </body>
 </html>
