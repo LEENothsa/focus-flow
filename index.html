@@ -127,13 +127,14 @@
     <script type="text/babel">
         const { useState, useEffect, Fragment, useMemo, useRef } = React;
 
-        // 请求通知权限
+        // 系统通知辅助函数 - 确保系统级通知权限
         const requestNotificationPermission = () => {
             if ("Notification" in window && Notification.permission !== "granted") {
                 Notification.requestPermission();
             }
         };
 
+        // 发送系统通知 (即便锁屏也能显示，取决于OS权限)
         const sendNotification = (title, body) => {
             if ("Notification" in window && Notification.permission === "granted") {
                 new Notification(title, { body, icon: 'icon.png' });
@@ -236,32 +237,32 @@
             const [todoList, setTodoList] = useState(savedTodo);
             const [draggingId, setDraggingId] = useState(null);
             const wallRef = useRef(null);
-
-            // 记录已发出的提醒，防止重复弹出
+            
+            // 追踪已发出的任务提醒
             const alertedTasks = useRef(new Set());
 
             useEffect(() => {
                 requestNotificationPermission();
             }, []);
 
-            // 核心逻辑：关联系统时钟的倒计时计算 + 任务提醒
+            // 核心定时器逻辑：处理倒计时与任务时间点提醒
             useEffect(() => {
                 let timer;
-                const updateTimer = () => {
+                const checkStatus = () => {
                     const now = new Date();
                     const nowTs = now.getTime();
 
-                    // 1. 检查任务开始时间点提醒
+                    // 全局提醒 1: 任务开始时间提醒
                     const currentTimeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
                     todoList.forEach(item => {
-                        const alertKey = `${item.id}_${currentTimeStr}`;
-                        if (item.time === currentTimeStr && !alertedTasks.current.has(alertKey)) {
-                            sendNotification("任务时间到了！", `现在该开始「${item.task}」了。`);
-                            alertedTasks.current.add(alertKey);
+                        const alertId = `${item.id}-${currentTimeStr}`;
+                        if (item.time === currentTimeStr && !alertedTasks.current.has(alertId)) {
+                            sendNotification("任务该开始了！", `计划中的「${item.task}」已经到达设定时间。`);
+                            alertedTasks.current.add(alertId);
                         }
                     });
 
-                    // 2. 处理专注倒计时
+                    // 全局提醒 2: 专注倒计时结束提醒
                     if (isActive && targetEndTime > 0) {
                         const remaining = Math.max(0, Math.ceil((targetEndTime - nowTs) / 1000));
                         setTimeLeft(remaining);
@@ -270,7 +271,7 @@
                             setIsActive(false);
                             setPostFocusModal(true);
                             localStorage.removeItem('focusFlow_targetEndTime');
-                            sendNotification("专注完成！", `你已完成了一次心流，来抽一张贴纸吧。`);
+                            sendNotification("专注完成！", "心流之旅已结束，来抽一张贴纸奖励自己吧 ✨");
                         }
                     } else if (!isActive && targetEndTime > 0) {
                         const remaining = Math.max(0, Math.ceil((targetEndTime - nowTs) / 1000));
@@ -278,12 +279,12 @@
                     }
                 };
 
-                updateTimer();
-                timer = setInterval(updateTimer, 1000);
+                checkStatus();
+                timer = setInterval(checkStatus, 1000);
                 return () => clearInterval(timer);
             }, [isActive, targetEndTime, todoList]);
 
-            // 持久化
+            // 数据持久化
             useEffect(() => {
                 localStorage.setItem('focusFlow_stickers', JSON.stringify(stickerHistory));
                 localStorage.setItem('focusFlow_todo', JSON.stringify(todoList));
@@ -294,7 +295,7 @@
             }, [stickerHistory, todoList, activeTask, isActive, targetEndTime, initialTime]);
 
             const startFocus = (task, duration = 300) => {
-                const finalTask = task || activeTask || taskInput || "随心专注";
+                const finalTask = task || taskInput || "随心专注";
                 const newTarget = Date.now() + (duration * 1000);
                 setActiveTask(finalTask);
                 setTargetEndTime(newTarget);
@@ -339,7 +340,7 @@
                 setPostFocusModal(false);
                 setPolaroidModal(true);
                 
-                // 改动点：重设倒计时为 5 分钟 (300秒)
+                // 结束并重设倒计时
                 setTargetEndTime(0);
                 setTimeLeft(300);
                 setInitialTime(300);
@@ -377,6 +378,17 @@
                 setView('home');
             };
 
+            // 修改点：每次打开设置面板时，更新为当前的系统时间
+            const toggleSettings = () => {
+                const nextState = !showSettings;
+                if (nextState) {
+                    const now = new Date();
+                    setStartHour(now.getHours());
+                    setStartMinute(now.getMinutes());
+                }
+                setShowSettings(nextState);
+            };
+
             const radius = 110; 
             const circumference = 2 * Math.PI * radius;
             const strokeDashoffset = circumference - (timeLeft / initialTime) * circumference;
@@ -403,7 +415,7 @@
                                     <div className="bg-white border border-[#E8E5DE] rounded-[28px] shadow-sm flex items-center p-2 pr-4">
                                         <input type="text" value={taskInput} onChange={(e) => setTaskInput(e.target.value)} placeholder="今天想专注做点什么？" className="flex-1 bg-transparent py-3 px-4 text-[14px] text-[#8E8B82] focus:outline-none" />
                                         <div className="flex items-center gap-2">
-                                            <button onClick={() => setShowSettings(!showSettings)} className={`w-8 h-8 flex items-center justify-center ${showSettings ? 'text-[#BBCBC2]' : 'text-[#C5C2BB]'}`}><Icon name="settings" size={18} /></button>
+                                            <button onClick={toggleSettings} className={`w-8 h-8 flex items-center justify-center ${showSettings ? 'text-[#BBCBC2]' : 'text-[#C5C2BB]'}`}><Icon name="settings" size={18} /></button>
                                             <button onClick={() => startFocus()} className="w-10 h-10 bg-[#BBCBC2] text-white rounded-full flex items-center justify-center btn-active shadow-sm"><Icon name="play" size={16} fill="white" /></button>
                                         </div>
                                     </div>
@@ -525,7 +537,6 @@
                                 <div className="text-[40px] mb-4">✨</div>
                                 <h3 className="text-[18px] text-[#8E8B82] mb-2 font-bold">专注阶段完成</h3>
                                 <div className="space-y-3 mb-6 mt-6">
-                                    {/* 加时逻辑校准：对应增加的时间设定倒数 */}
                                     {[15, 30, 60].map(mins => (
                                         <button key={mins} onClick={() => startFocus(null, mins * 60)} className="w-full py-3 bg-[#BBCBC2]/10 text-[#BBCBC2] rounded-[18px] text-[13px] font-medium btn-active">我还能坚持 {mins} 分钟</button>
                                     ))}
