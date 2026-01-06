@@ -127,7 +127,6 @@
     <script type="text/babel">
         const { useState, useEffect, Fragment, useMemo, useRef } = React;
 
-        // 系统通知辅助函数
         const requestNotificationPermission = () => {
             if ("Notification" in window && Notification.permission !== "granted") {
                 Notification.requestPermission();
@@ -238,28 +237,24 @@
             const [draggingId, setDraggingId] = useState(null);
             const wallRef = useRef(null);
             
-            // 提醒相关状态
-            const [advanceReminders, setAdvanceReminders] = useState([5]); // 初始默认5分钟提醒
+            const [advanceReminders, setAdvanceReminders] = useState([5]);
             const alertedTasks = useRef(new Set());
 
             useEffect(() => {
                 requestNotificationPermission();
             }, []);
 
-            // 核心定时器逻辑
             useEffect(() => {
                 let timer;
                 const checkStatus = () => {
                     const now = new Date();
                     const nowTs = now.getTime();
 
-                    // 处理提前提醒与准时提醒
                     todoList.forEach(item => {
                         const [h, m] = item.time.split(':').map(Number);
                         const taskStartTime = new Date(now);
                         taskStartTime.setHours(h, m, 0, 0);
 
-                        // 1. 准时提醒
                         const currentTimeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
                         const alertIdOnTime = `${item.id}-ontime-${currentTimeStr}`;
                         if (item.time === currentTimeStr && !alertedTasks.current.has(alertIdOnTime)) {
@@ -267,11 +262,9 @@
                             alertedTasks.current.add(alertIdOnTime);
                         }
 
-                        // 2. 提前提醒 (Slider设置)
                         if (item.reminders) {
                             item.reminders.forEach(minutes => {
                                 const reminderTimeTs = taskStartTime.getTime() - (minutes * 60 * 1000);
-                                // 在一分钟的容差内检查
                                 if (Math.abs(nowTs - reminderTimeTs) < 30000) {
                                     const alertIdAdvance = `${item.id}-advance-${minutes}-${item.time}`;
                                     if (!alertedTasks.current.has(alertIdAdvance)) {
@@ -283,7 +276,6 @@
                         }
                     });
 
-                    // 专注倒计时结束提醒
                     if (isActive && targetEndTime > 0) {
                         const remaining = Math.max(0, Math.ceil((targetEndTime - nowTs) / 1000));
                         setTimeLeft(remaining);
@@ -348,7 +340,7 @@
                 setTodoList([...todoList, { id: Date.now(), task, time: timeStr, reminders: [...advanceReminders] }]);
                 setTaskInput("");
                 setShowSettings(false);
-                setAdvanceReminders([5]); // 重置为默认
+                setAdvanceReminders([5]);
             };
 
             const handleSurpriseMe = () => setTaskInput(MASTER_TASKS[Math.floor(Math.random() * MASTER_TASKS.length)]);
@@ -390,11 +382,20 @@
             }, [currentDate]);
 
             const stopFocus = () => {
-                setIsActive(false);
-                setTargetEndTime(0);
-                setTimeLeft(300);
-                setInitialTime(300);
-                setView('home');
+                // 逻辑：如果是初始的 5 分钟 (300s) 且 任务还没结束过
+                // 此时提前结束不触发抽奖
+                if (initialTime === 300 && !postFocusModal) {
+                    setIsActive(false);
+                    setTargetEndTime(0);
+                    setTimeLeft(300);
+                    setInitialTime(300);
+                    setView('home');
+                } else {
+                    // 除此之外的所有结束（包括加时后的结束、或者已经自然结束过弹出过抽奖提示后的点击）
+                    // 均触发抽奖逻辑
+                    setIsActive(false);
+                    setPostFocusModal(true);
+                }
             };
 
             const toggleSettings = () => {
@@ -627,29 +628,22 @@
 
         ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 
-        // --- PWA 自动更新安装逻辑 (优化版：修复协议报错) ---
-        // 在受限的 iframe 或预览环境中，URL 协议可能不支持注册 SW
         if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./sw.js').then(reg => {
-                    // 检查更新逻辑
                     reg.addEventListener('updatefound', () => {
                         const newWorker = reg.installing;
                         if (newWorker) {
                             newWorker.addEventListener('statechange', () => {
                                 if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                                    // 发现新版本并已安装，自动刷新应用以启用
                                     window.location.reload();
                                 }
                             });
                         }
                     });
-                }).catch(err => {
-                    // 静默捕获注册失败（常见于预览环境协议不支持）
-                });
+                }).catch(err => {});
             });
 
-            // 轮询检查服务器是否有新Service Worker版本 (每小时)
             setInterval(() => {
                 navigator.serviceWorker.ready.then(reg => {
                     if (reg.update) reg.update();
