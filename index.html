@@ -135,7 +135,6 @@
 
         const sendNotification = (title, body) => {
             if ("Notification" in window && Notification.permission === "granted") {
-                // 解决后台通知的关键：尝试通过 Service Worker 发送，这在锁屏和后台更可靠
                 if (navigator.serviceWorker && navigator.serviceWorker.controller) {
                     navigator.serviceWorker.ready.then(registration => {
                         registration.showNotification(title, {
@@ -146,7 +145,6 @@
                         });
                     });
                 } else {
-                    // 降级为普通网页通知
                     new Notification(title, { body, icon: 'icon.png' });
                 }
             }
@@ -230,8 +228,9 @@
 
             const [view, setView] = useState('home');
             const [isActive, setIsActive] = useState(savedIsActive);
+            const [isStarted, setIsStarted] = useState(false); 
             const [targetEndTime, setTargetEndTime] = useState(savedTargetEndTime);
-            const [timeLeft, setTimeLeft] = useState(0);
+            const [timeLeft, setTimeLeft] = useState(savedInitialTime);
             const [initialTime, setInitialTime] = useState(savedInitialTime); 
 
             const [startHour, setStartHour] = useState(new Date().getHours());
@@ -256,6 +255,19 @@
             useEffect(() => {
                 requestNotificationPermission();
             }, []);
+
+            const resetTimer = () => {
+                setIsActive(false);
+                setIsStarted(false);
+                setTargetEndTime(0);
+                setTimeLeft(300); 
+                setInitialTime(300);
+                localStorage.removeItem('focusFlow_targetEndTime');
+            };
+
+            const completeTaskFromList = (taskName) => {
+                setTodoList(prev => prev.filter(item => item.task !== taskName));
+            };
 
             useEffect(() => {
                 let timer;
@@ -296,19 +308,16 @@
                         if (remaining <= 0) {
                             setIsActive(false);
                             setPostFocusModal(true);
-                            localStorage.removeItem('focusFlow_targetEndTime');
                             sendNotification("专注完成！", "心流之旅已结束，来抽一张贴纸奖励自己吧 ✨");
+                            completeTaskFromList(activeTask);
                         }
-                    } else if (!isActive && targetEndTime > 0) {
-                        const remaining = Math.max(0, Math.ceil((targetEndTime - nowTs) / 1000));
-                        setTimeLeft(remaining);
                     }
                 };
 
                 checkStatus();
                 timer = setInterval(checkStatus, 1000);
                 return () => clearInterval(timer);
-            }, [isActive, targetEndTime, todoList]);
+            }, [isActive, targetEndTime, todoList, activeTask]);
 
             useEffect(() => {
                 localStorage.setItem('focusFlow_stickers', JSON.stringify(stickerHistory));
@@ -321,12 +330,14 @@
 
             const startFocus = (task, duration = 300) => {
                 const finalTask = task || taskInput || "随心专注";
+                completeTaskFromList(finalTask);
                 const newTarget = Date.now() + (duration * 1000);
                 setActiveTask(finalTask);
                 setTargetEndTime(newTarget);
                 setInitialTime(duration);
                 setTimeLeft(duration);
                 setIsActive(true);
+                setIsStarted(true);
                 setView('focus');
                 setPostFocusModal(false);
             };
@@ -338,6 +349,7 @@
                     const newTarget = Date.now() + (timeLeft * 1000);
                     setTargetEndTime(newTarget);
                     setIsActive(true);
+                    setIsStarted(true);
                 }
             };
 
@@ -365,10 +377,7 @@
                 setStickerHistory([...stickerHistory, newSticker]);
                 setPostFocusModal(false);
                 setPolaroidModal(true);
-                setTargetEndTime(0);
-                setTimeLeft(300);
-                setInitialTime(300);
-                setIsActive(false);
+                resetTimer(); 
             };
 
             const onDragStart = (id) => setDraggingId(id);
@@ -395,11 +404,8 @@
             }, [currentDate]);
 
             const stopFocus = () => {
-                if (initialTime === 300 && !postFocusModal) {
-                    setIsActive(false);
-                    setTargetEndTime(0);
-                    setTimeLeft(300);
-                    setInitialTime(300);
+                if (initialTime === 300 && timeLeft > 0) {
+                    resetTimer();
                     setView('home');
                 } else {
                     setIsActive(false);
@@ -548,7 +554,7 @@
                                 </div>
                                 <div className="flex flex-col gap-6 w-full px-12 items-center">
                                     <button onClick={toggleFocus} className="w-full py-4 bg-[#BBCBC2] text-white rounded-[24px] text-[13px] tracking-widest btn-active shadow-md font-medium">
-                                        {isActive ? "稍作喘息" : "继续心流"}
+                                        {isActive ? "稍作喘息" : (isStarted ? "继续心流" : "开始心流")}
                                     </button>
                                     <button onClick={stopFocus} className="text-[11px] text-[#DEDAD1] border-b border-transparent hover:border-current pb-0.5">结束本次专注</button>
                                 </div>
@@ -559,6 +565,15 @@
                             <div className="h-full flex flex-col animate-fadeIn">
                                 <div className="mb-6"><h2 className="text-[22px] text-[#8E8B82]">手帐墙</h2><p className="text-[10px] text-[#C5C2BB]">长按拖拽贴纸，布置你的专属空间</p></div>
                                 <div ref={wallRef} onMouseMove={onDragMove} onMouseUp={onDragEnd} onTouchMove={onDragMove} onTouchEnd={onDragEnd} className="flex-1 bg-white rounded-[32px] border-8 border-white shadow-inner sticker-wall-bg relative overflow-hidden">
+                                    {stickerHistory.length === 0 && (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center px-12 text-center pointer-events-none">
+                                            <div className="text-[32px] mb-4 opacity-20">☁️</div>
+                                            <p className="text-[13px] text-[#C5C2BB] leading-relaxed italic">
+                                                不如先试着专注 5 分钟，<br/>
+                                                给这里添第一枚小贴纸吧。
+                                            </p>
+                                        </div>
+                                    )}
                                     {stickerHistory.map(s => (
                                         <div key={s.id} onMouseDown={() => onDragStart(s.id)} onTouchStart={() => onDragStart(s.id)} className={`absolute draggable-sticker text-5xl select-none ${draggingId === s.id ? 'z-50 scale-125' : 'z-10'}`} style={{ left: `${s.x}%`, top: `${s.y}%`, transform: `translate(-50%, -50%) rotate(${s.rotation}deg)` }}>{s.icon}</div>
                                     ))}
@@ -637,7 +652,6 @@
 
         ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 
-        // 核心：Service Worker 的注册和更新，确保后台能力
         if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./sw.js').then(reg => {
